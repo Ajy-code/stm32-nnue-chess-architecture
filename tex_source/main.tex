@@ -1,0 +1,228 @@
+\documentclass[11pt, a4paper]{article}
+
+% --- ENCODAGE ET LANGUE ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+
+% --- MISE EN PAGE ET MARGES INDUSTRIELLES ---
+\usepackage{geometry}
+\geometry{
+    a4paper,
+    left=25mm,
+    right=25mm,
+    top=25mm,
+    bottom=25mm
+}
+\usepackage{setspace}
+\setstretch{1.15}
+
+% --- EN-TÊTES ET PIEDS DE PAGE ---
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{Edge AI Chess Engine}
+\rhead{\thepage}
+\cfoot{}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% --- MATHÉMATIQUES AVANCÉES ---
+\usepackage{amsmath, amssymb, amsfonts, bm}
+
+% --- GRAPHIQUES ET FIGURES ---
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{tikz} 
+\usetikzlibrary{positioning, arrows.meta, shapes.geometric}
+
+% --- ALGORITHMES ET PSEUDO-CODE ---
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\floatname{algorithm}{Algorithme}
+
+% --- CODE SOURCE ---
+\usepackage{xcolor}
+\usepackage{listings}
+
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    tabsize=2
+}
+\lstset{style=mystyle}
+
+% --- NAVIGATION ET LIENS ---
+\usepackage[colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=black]{hyperref}
+
+% ==========================================
+%            INFORMATIONS DU DOCUMENT
+% ==========================================
+\title{\textbf{Edge AI Chess Engine : QAT, Distillation et Optimisation Bas Niveau sur Architecture ARM 32-bits}}
+\author{Ajyad HASSANI \\ \textit{Élève-Ingénieur (1A) -- Télécom SudParis} \\ \textit{Rôle : Algorithmique \& Apprentissage Profond}}
+\date{Mars 2026}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+\newpage
+\tableofcontents
+\thispagestyle{empty}
+\newpage
+
+\setcounter{page}{1}
+
+% ==========================================
+%            DÉBUT DU CONTENU
+% ==========================================
+
+\section{Résumé Exécutif}
+Ce document détaille la conception d'un moteur d'échecs hybride sur \textbf{STM32F411}. L'innovation majeure réside dans l'intégration d'un réseau de neurones de type \textbf{NNUE} (\textit{Efficiently Updatable Neural Network}) comme fonction d'évaluation, optimisé pour une exécution sans unité de calcul flottant (FPU). 
+
+Afin de respecter la « loi d'airain » du matériel, le modèle suit une chaîne de transformation rigoureuse :
+\begin{itemize}
+    \item \textbf{Architecture Frugale} : Une couche cachée limitée à 32 neurones pour minimiser l'empreinte mémoire.
+    \item \textbf{Quantification Int16} : Une conversion intégrale en arithmétique entière 16 bits. Ce choix garantit une exécution déterministe et performante sur un processeur non optimisé pour les calculs tensoriels.
+    \item \textbf{Contraintes Matérielles} : Le système est dimensionné pour opérer dans une enveloppe stricte de \textbf{128 Ko de RAM} et \textbf{512 Ko de Flash}.
+\end{itemize}
+
+\section{Introduction}
+
+\subsection{Sélection de la plateforme : STM32F411}
+Le STM32F411 a été retenu pour son rapport performance/consommation optimal en contexte \textit{Edge}. Bien que doté d'un cœur Cortex-M4, ses limitations intrinsèques dictent des choix algorithmiques orientés vers l'efficacité brute.
+
+\subsection{Capacité de calcul et architecture}
+Le système repose sur un processeur \textbf{ARM Cortex-M4 32 bits} monocœur cadencé à \textbf{100 MHz}. 
+
+\begin{itemize}
+    \item \textbf{Gestion du flux} : L'absence de multi-cœur impose un partage strict du temps processeur entre la recherche arborescente (Minimax) et l'inférence du réseau. L'optimisation du code est donc vitale au maintien de la profondeur de recherche.
+    \item \textbf{Arithmétique Entière} : Bien que le cœur dispose d'une FPU simple précision, l'inférence neuronale en \textit{float} est proscrite au profit d'une stratégie \textbf{Int16}. Cette approche exploite la puissance native du jeu d'instructions 32 bits pour transformer l'inférence en une séquence d'opérations entières à haute vélocité.
+\end{itemize}
+
+\subsection{Objectifs de l'EDD}
+Le présent document vise à démontrer que l'alliance d'un réseau de neurones et d'une quantification Int16 permet d'atteindre une précision d'évaluation supérieure aux heuristiques classiques, tout en respectant les limites thermiques et énergétiques d'un système embarqué.
+
+\section{Architecture du Moteur d'Évaluation (NNUE)}
+Le choix d'un réseau de neurones de type \textbf{NNUE} répond à la nécessité de dépasser les limites de précision des fonctions d'évaluation statiques traditionnelles tout en respectant les contraintes de latence d'un système embarqué. Cette architecture, composée d'une unique couche cachée couplée à une fonction d'activation de type \textbf{CReLu} (\textit{Clipped ReLU}), repose sur la capacité du réseau à subir des mises à jour différentielles.
+
+\subsection{Représentation de l'échiquier (One-Hot Encoding)}
+L'état physique de l'échiquier est projeté dans un espace vectoriel de dimension $N=768$. Cet espace permet un mappage bijectif entre une configuration locale $\{\text{pièce, couleur, case}\}$ et un index unique $k$. L'indexation est régie par la fonction de hachage suivante :
+\begin{equation}
+    k = \text{pièce} + (6 \times \text{couleur}) + (12 \times \text{case})
+\end{equation}
+Les variables de cette fonction sont discrétisées selon les plages suivantes :
+\begin{itemize}
+    \item $\text{\textbf{pièce}} \in \{0, 1, 2, 3, 4, 5\}$ correspondant respectivement à $\{P, N, B, R, Q, K\}$.
+    \item $\text{\textbf{couleur}} \in \{0, 1\}$ où $0$ représente les Blancs et $1$ les Noirs.
+    \item $\text{\textbf{case}} \in \{0, 1, \dots, 63\}$ pour les 64 cases de l'échiquier.
+\end{itemize}
+Le vecteur d'entrée est défini comme un vecteur ligne binaire $\mathbf{x} \in \{0, 1\}^{1 \times 768}$. Par construction, $\mathbf{x}$ est une représentation \textit{One-Hot} : pour chaque case occupée, une seule composante parmi les 12 possibles est active (valeur $1$), les autres étant nulles ($0$).
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[node distance=1.5cm, >=Stealth]
+        % Echiquier simplifié
+        \draw[step=0.4cm,black,very thin] (0,0) grid (1.6,1.6);
+        \fill[gray!60] (0.4,0.4) rectangle (0.8,0.8);
+        \node[below] at (0.8,0) {\scriptsize Échiquier (Case $s$)};
+
+        % Flèche de mapping
+        \draw[->, thick] (2,0.8) -- (3.5,0.8) node[midway, above] {\scriptsize $f(p,c,s)$};
+
+        % Vecteur One-Hot
+        \draw (4, -0.5) rectangle (4.5, 2.1);
+        \foreach \y in {-0.3, 0.1, 0.5, 1.3, 1.7} \draw (4, \y) -- (4.5, \y);
+        \fill[blue!40] (4, 0.9) rectangle (4.5, 1.3);
+        \node[right] at (4.5, 1.1) {\scriptsize Index $k$ (actif)};
+        \node[right] at (4.5, 0.3) {\scriptsize Autres $=0$};
+        \node[below] at (4.25,-0.5) {\scriptsize Vecteur $\mathbf{x}$ ($768$)};
+
+        % Légende explicative
+        \node[draw, dotted, right=2.5cm, text width=4.2cm, font=\scriptsize] at (7.2, 0.8) {
+            \textbf{Paramètres de hachage :} \\
+            $p$ (\text{pièce}) : 0 (Pion) à 5 (Roi) \\
+            $c$ (\text{couleur}) : 0 (B) ou 1 (N) \\
+            $s$ (\text{case}) : 0 à 63
+        };
+    \end{tikzpicture}
+    \caption{Représentation One-Hot Encoding et projection vers l'index $k$.}
+\end{figure}
+
+\subsection{Formalisme de l'Accumulateur}
+La première couche du réseau agit comme un accumulateur de caractéristiques. Pour garantir une implémentation logicielle directe sur architecture 32 bits, nous définissons l'accumulateur $\mathbf{A}$ comme un vecteur ligne de dimension 32. 
+
+Soit $\mathbf{W} \in \mathbb{Z}^{768 \times 32}$ la matrice des poids synaptiques. Nous définissons $\mathbf{w}_k \in \mathbb{Z}^{1 \times 32}$ comme le \textbf{vecteur ligne} correspondant à la $k$-ième ligne de la matrice $\mathbf{W}$. L'état de l'accumulateur est défini par :
+\begin{equation}
+    \mathbf{A} = \mathbf{xW} + \mathbf{b} = \left( \sum_{k, x_k=1} \mathbf{w}_k \right) + \mathbf{b}
+\end{equation}
+Où $\mathbf{b} \in \mathbb{Z}^{1 \times 32}$ est le biais. L'accumulateur correspond mathématiquement à la somme vectorielle des poids des caractéristiques actives.
+
+\subsection{Démonstration de la Mise à Jour Incrémentale}
+La performance du moteur sur \textbf{STM32F411} repose sur l'exploitation de la corrélation entre deux positions successives. Lors d'un mouvement déplaçant une pièce d'une case source ($s$) vers une case destination ($d$), le vecteur $\mathbf{x}$ ne subit que deux modifications : l'indice $i$ (pièce sortante) passe à $0$ et l'indice $j$ (pièce entrante) passe à $1$.
+
+\paragraph{Preuve par substitution :}
+Soit $\mathbf{A}_t$ l'état de l'accumulateur à l'instant $t$. Par définition de la forme sommatoire :
+\begin{equation}
+    \mathbf{A}_t = \left( \sum_{k \neq i, j, x_k=1} \mathbf{w}_k \right) + \mathbf{w}_i + \mathbf{b}
+\end{equation}
+L'état suivant $\mathbf{A}_{t+1}$ s'écrit en désactivant l'indice $i$ et en activant l'indice $j$ :
+\begin{equation}
+    \mathbf{A}_{t+1} = \left( \sum_{k \neq i, j, x_k=1} \mathbf{w}_k \right) + \mathbf{w}_j + \mathbf{b}
+\end{equation}
+En isolant le terme de l'état précédent dans l'équation, nous identifions directement la relation de récurrence :
+\begin{equation}
+    \mathbf{A}_{t+1} = \underbrace{\left( \sum_{k \neq i, j, x_k=1} \mathbf{w}_k + \mathbf{w}_i + \mathbf{b} \right)}_{\mathbf{A}_t} - \mathbf{w}_i + \mathbf{w}_j
+\end{equation}
+D'où la relation fondamentale : $\mathbf{A}_{t+1} = \mathbf{A}_t - \mathbf{w}_i + \mathbf{w}_j$.
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[node distance=1cm, >=Stealth]
+        % Etat t
+        \node[draw, minimum width=2cm, fill=gray!10] (At) {$\mathbf{A}_t$};
+        
+        % Opérations
+        \node[right=of At, circle, draw, inner sep=1pt] (minus) {$-$};
+        \node[below=0.5cm of minus, blue] (wi) {$\mathbf{w}_i$};
+        \node[right=of minus, circle, draw, inner sep=1pt] (plus) {$+$};
+        \node[below=0.5cm of plus, red] (wj) {$\mathbf{w}_j$};
+        
+        % Etat t+1
+        \node[right=of plus, draw, minimum width=2cm, fill=blue!5] (At1) {$\mathbf{A}_{t+1}$};
+
+        % Flèches
+        \draw[->] (At) -- (minus);
+        \draw[->, blue] (wi) -- (minus);
+        \draw[->] (minus) -- (plus);
+        \draw[->, red] (wj) -- (plus);
+        \draw[->] (plus) -- (At1);
+        
+        \node[below=1.2cm of minus, text width=5cm, align=center] {\scriptsize Coût : 64 opérations Int16 \\ (32 subs + 32 adds)};
+    \end{tikzpicture}
+    \caption{Mécanisme de mise à jour différentielle de l'accumulateur.}
+\end{figure}
+
+\subsection{Gain de complexité et impact sur la mémoire Flash}
+Cette démonstration prouve que l'inférence est réduite à une complexité constante $O(32)$. Le coût CPU par nœud est limité à \textbf{64 opérations entières}. Sur le plan matériel, ce choix est validé par son empreinte sur la Flash (512 Ko) :
+\begin{itemize}
+    \item \textbf{Stockage de la matrice $\mathbf{W}$} : $768 \times 32 \times 2 \text{ octets (Int16)} = 49\,152 \text{ octets}$.
+    \item \textbf{Occupation relative} : L'accumulateur n'occupe que \textbf{9,6 \% de la Flash totale}.
+\end{itemize}
+
+\end{document}
