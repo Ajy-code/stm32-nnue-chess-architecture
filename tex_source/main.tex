@@ -118,8 +118,8 @@ Le système repose sur un processeur \textbf{ARM Cortex-M4 32 bits} monocœur ca
 \subsection{Objectifs de l'EDD}
 Le présent document vise à démontrer que l'alliance d'un réseau de neurones et d'une quantification Int16 permet d'atteindre une précision d'évaluation supérieure aux heuristiques classiques, tout en respectant les limites thermiques et énergétiques d'un système embarqué.
 
-\section{Architecture du Moteur d'Évaluation (NNUE)}
-Le choix d'un réseau de neurones de type \textbf{NNUE} répond à la nécessité de dépasser les limites de précision des fonctions d'évaluation statiques traditionnelles tout en respectant les contraintes de latence d'un système embarqué. Cette architecture, composée d'une unique couche cachée couplée à une fonction d'activation de type \textbf{CReLu} (\textit{Clipped ReLU}), repose sur la capacité du réseau à subir des mises à jour différentielles.
+\section{Architecture du moteur d'évaluation (NNUE)}
+Le choix d'un réseau de neurones de type \textbf{NNUE} répond à la nécessité de dépasser les limites de précision des fonctions d'évaluation statiques traditionnelles tout en respectant les contraintes de latence d'un système embarqué. Cette architecture, composée d'une unique couche cachée couplée à une fonction d'activation de type \textbf{CReLu} (\textit{Clipped ReLU}), effectue ensuite une dernière opération, un produit scalaire entre les activations et un vecteur de poids pour produire un score scalaire. L'ensemble repose sur la capacité de l'accumulateur à subir des mises à jour incrémentales dictées par les variations du vecteur d'entrée.
 
 \subsection{Représentation de l'échiquier (One-Hot Encoding)}
 L'état physique de l'échiquier est projeté dans un espace vectoriel de dimension $N=768$. Cet espace permet un mappage bijectif entre une configuration locale $\{\text{pièce, couleur, case}\}$ et un index unique $k$. L'indexation est régie par la fonction de hachage suivante :
@@ -164,8 +164,8 @@ Le vecteur d'entrée est défini comme un vecteur ligne binaire $\mathbf{x} \in 
     \caption{Représentation One-Hot Encoding et projection vers l'index $k$.}
 \end{figure}
 
-\subsection{Formalisme de l'Accumulateur}
-La première couche du réseau agit comme un accumulateur de caractéristiques. Pour garantir une implémentation logicielle directe sur architecture 32 bits, nous définissons l'accumulateur $\mathbf{A}$ comme un vecteur ligne de dimension 32. 
+\subsection{Formalisme de l'accumulateur}
+L'unique couche cachée du réseau agit comme un accumulateur de caractéristiques. Pour garantir une implémentation logicielle directe sur architecture 32 bits, nous définissons l'accumulateur $\mathbf{A}$ comme un vecteur ligne de dimension 32. 
 
 Soit $\mathbf{W} \in \mathbb{Z}^{768 \times 32}$ la matrice des poids synaptiques. Nous définissons $\mathbf{w}_k \in \mathbb{Z}^{1 \times 32}$ comme le \textbf{vecteur ligne} correspondant à la $k$-ième ligne de la matrice $\mathbf{W}$. L'état de l'accumulateur est défini par :
 \begin{equation}
@@ -224,5 +224,70 @@ Cette démonstration prouve que l'inférence est réduite à une complexité con
     \item \textbf{Stockage de la matrice $\mathbf{W}$} : $768 \times 32 \times 2 \text{ octets (Int16)} = 49\,152 \text{ octets}$.
     \item \textbf{Occupation relative} : L'accumulateur n'occupe que \textbf{9,6 \% de la Flash totale}.
 \end{itemize}
+
+\section{Robustesse numérique et dimensionnement des registres}
+
+L'implémentation de l'inférence sur l'architecture ARM Cortex-M4 repose sur une arithmétique entière stricte. Afin de prévenir tout risque de dépassement de capacité (\textit{overflow}) au sein des registres 16 et 32 bits, des contraintes sur les plages de valeurs ont été définies en amont de la quantification. Cette section détaille les intervalles imposés à chaque strate du réseau et démontre mathématiquement la stabilité du graphe de calcul.
+
+\subsection{Facteurs de quantification et seuils de saturation}
+
+Le passage des paramètres de l'espace continu (nombres à virgule flottante) vers l'espace discret (entiers) s'articule autour de deux constantes de mise à l'échelle : $Q_A = 127$ et $Q_B = 64$. 
+
+Afin de borner la magnitude des entiers générés, des coefficients de clippage (notés $C$) sont appliqués aux paramètres réels (poids et biais) préalablement à leur multiplication par les facteurs de quantification. La transformation s'opère de manière distincte selon la couche du réseau.
+
+\paragraph{A. Couche cachée (Accumulateur)}
+Pour la première strate du réseau, un coefficient de clippage $C_1 = 7$ est imposé. Les valeurs réelles des poids ($W_{1,\text{réel}}$) et des biais ($B_{1,\text{réel}}$) sont ainsi contraintes dans l'intervalle $[-7, 7]$. La conversion en entiers utilise le facteur $Q_A$ :
+\begin{itemize}
+    \item \textbf{Poids de l'accumulateur :} $W_{1,int} = \text{round}(W_{1,\text{réel}} \cdot Q_A)$. L'intervalle entier résultant est $[-7 \times 127, +7 \times 127]$, soit \textbf{$[-889, 889]$}.
+    \item \textbf{Biais de l'accumulateur :} La même règle s'applique, $B_{1,int} = \text{round}(B_{1,\text{réel}} \cdot Q_A)$. L'intervalle est strictement identique : \textbf{$[-889, 889]$}.
+\end{itemize}
+
+\paragraph{B. Couche de sortie}
+Pour la seconde strate, chargée d'agréger les données de l'accumulateur, un coefficient de clippage plus restrictif $C_2 = 2$ est appliqué. Les opérations de quantification diffèrent entre les poids et le biais afin de maintenir la cohérence dimensionnelle lors du produit scalaire :
+\begin{itemize}
+    \item \textbf{Poids de sortie :} Les valeurs réelles ($W_{2,\text{réel}} \in [-2, 2]$) sont quantifiées via le facteur $Q_B$. La relation $W_{2,int} = \text{round}(W_{2,\text{réel}} \cdot Q_B)$ établit un intervalle entier de $[-2 \times 64, +2 \times 64]$, soit \textbf{$[-128, 128]$}.
+    \item \textbf{Biais de sortie :} Pour que le biais puisse être additionné au résultat du produit scalaire (lequel implique des activations à l'échelle $Q_A$ et des poids à l'échelle $Q_B$), il doit être quantifié selon le produit des deux facteurs. Sous la contrainte du seuil $C_2$, la relation s'écrit $B_{\text{out},int} = \text{round}(B_{\text{out},\text{réel}} \cdot Q_A \cdot Q_B)$. L'intervalle entier résultant est $[-2 \times (127 \times 64), +2 \times (127 \times 64)]$, soit \textbf{$[-16\,256, 16\,256]$}.
+\end{itemize}
+
+\subsection{Analyse de l'accumulateur}
+
+L'état de l'accumulateur est stocké dans un tableau d'entiers 16 bits signés (\texttt{int16\_t}), dont la plage de valeurs s'étend de $-32\,768$ à $+32\,767$. 
+
+La valeur d'une composante de l'accumulateur dépend du biais $B_1$ et de la somme des poids $W_1$ correspondant aux caractéristiques actives. Aux échecs, le nombre maximum de pièces simultanément présentes sur l'échiquier est $N_{max} = 32$. La valeur maximale absolue théorique est donnée par l'équation :
+\begin{equation}
+    |A|_{max} = |B_1| + \sum_{k=1}^{32} |W_{1,k}|
+\end{equation}
+En substituant les variables par les bornes supérieures définies à la section précédente :
+\begin{equation}
+    |A|_{max} \leq 889 + (32 \times 889) = 33 \times 889 = \mathbf{29\,337}
+\end{equation}
+La condition $29\,337 \leq 32\,767$ est vérifiée. Cette limite garantit que la mise à jour incrémentale de l'accumulateur peut être exécutée en continu sans générer de dépassement de capacité et sans nécessiter l'intégration d'instructions de vérification conditionnelle.
+
+\subsection{Analyse de la couche de sortie}
+
+Le calcul du score de sortie s'effectue au sein d'un registre 32 bits signé (\texttt{int32\_t}). Les activations $a_i$ transmises par la couche cachée sont préalablement bornées par la fonction \textbf{CReLu} dans l'intervalle $[0, Q_A]$, soit $[0, 127]$.
+
+\paragraph{Calcul du score brut}
+Le score intermédiaire $S$ agrège les contributions des 64 neurones (32 issus de la perspective blanche, 32 de la perspective noire) et y ajoute le biais de sortie $B_{\text{out}}$. Sa valeur maximale absolue s'établit à :
+\begin{equation}
+    |S|_{max} = |B_{\text{out}}| + \sum_{i=1}^{64} (a_i \cdot |W_{2,i}|)
+\end{equation}
+\begin{equation}
+    |S|_{max} = 16\,256 + (64 \times 127 \times 128) = 16\,256 + 1\,040\,384 = \mathbf{1\,056\,640}
+\end{equation}
+
+\paragraph{Mise à l'échelle finale}
+Avant l'étape de déquantification, le score intermédiaire $S$ est multiplié par la constante $\text{SCALE} = 2000$. Cette opération définit la limite dynamique maximale du système :
+\begin{equation}
+    V_{\text{scaled\_max}} = |S|_{max} \times 2000 = 1\,056\,640 \times 2000 = \mathbf{2\,113\,280\,000}
+\end{equation}
+La valeur maximale représentable par un registre \texttt{int32\_t} étant de $2\,147\,483\,647$, le système exploite, dans la configuration la plus extrême théoriquement possible, 98,4\,\% de la plage de valeurs disponible.
+
+L'évaluation finale est ensuite obtenue par la division de cette valeur par le produit $Q_A \times Q_B$ :
+\begin{equation}
+    \text{Evaluation} = \frac{V_{\text{scaled}}}{Q_A \times Q_B}
+\end{equation}
+
+Cette démonstration établit que les intervalles de clippage $C_1=7$ et $C_2=2$ bornent mathématiquement le réseau en dessous des limites matérielles du STM32F411, validant ainsi la stabilité numérique de l'inférence.
 
 \end{document}
