@@ -112,7 +112,7 @@ Le système repose sur un processeur \textbf{ARM Cortex-M4 32 bits} monocœur ca
 
 \begin{itemize}
     \item \textbf{Gestion du flux} : L'absence de multi-cœur impose un partage strict du temps processeur entre la recherche arborescente (Minimax) et l'inférence du réseau. L'optimisation du code est donc vitale au maintien de la profondeur de recherche.
-    \item \textbf{Arithmétique Entière} : Bien que le cœur dispose d'une FPU simple précision, l'inférence neuronale en \textit{float} est proscrite au profit d'une stratégie \textbf{Int16}. Cette approche exploite la puissance native du jeu d'instructions 32 bits pour transformer l'inférence en une séquence d'opérations entières à haute vélocité.
+    \item \textbf{Arithm\'etique enti\`ere} : Bien que le c\oe ur Cortex-M4F dispose d'une FPU simple pr\'ecision, l'inf\'erence neuronale en \textit{float} est d\'elib\'er\'ement \'evit\'ee. Le choix \textbf{Int16} maximise le nombre de n\oe uds explor\'es par seconde, garantit un comportement d\'eterministe et simplifie le dimensionnement num\'erique sur une cible embarqu\'ee.. Cette approche exploite la puissance native du jeu d'instructions 32 bits pour transformer l'inférence en une séquence d'opérations entières à haute vélocité.
 \end{itemize}
 
 \subsection{Objectifs de l'EDD}
@@ -124,7 +124,7 @@ Le choix d'un réseau de neurones de type \textbf{NNUE} répond à la nécessit�
 \subsection{Représentation de l'échiquier (One-Hot Encoding)}
 L'état physique de l'échiquier est projeté dans un espace vectoriel de dimension $N=768$. Cet espace permet un mappage bijectif entre une configuration locale $\{\text{pièce, couleur, case}\}$ et un index unique $k$. L'indexation est régie par la fonction de hachage suivante :
 \begin{equation}
-    k = \text{pièce} + (6 \times \text{couleur}) + (12 \times \text{case})
+    k \;=\; (\;6 \cdot \text{couleur} \;+\; \text{pi\`ece}\;)\cdot 64 \;+\; \text{case}
 \end{equation}
 Les variables de cette fonction sont discrétisées selon les plages suivantes :
 \begin{itemize}
@@ -213,7 +213,7 @@ D'où la relation fondamentale : $\mathbf{A}_{t+1} = \mathbf{A}_t - \mathbf{w}_i
         \draw[->, red] (wj) -- (plus);
         \draw[->] (plus) -- (At1);
         
-        \node[below=1.2cm of minus, text width=5cm, align=center] {\scriptsize Coût : 64 opérations Int16 \\ (32 subs + 32 adds)};
+        \node[below=1.2cm of minus, text width=6.2cm, align=center] {\scriptsize Cas simple (sans capture / roque / promotion) : \\ $2\times HL$ op\'erations Int16 $\approx 64$ (32 subs + 32 adds) \\ \emph{Capture / roque / promotion : facteur constant suppl\'ementaire,} \\ \emph{mais le co\^ut reste en }$O(HL)$};
     \end{tikzpicture}
     \caption{Mécanisme de mise à jour différentielle de l'accumulateur.}
 \end{figure}
