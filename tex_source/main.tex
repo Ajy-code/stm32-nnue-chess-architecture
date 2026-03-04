@@ -93,7 +93,7 @@
 % ==========================================
 
 \section{Résumé Exécutif}
-Ce document détaille la conception d'un moteur d'échecs hybride sur \textbf{STM32F411}. L'innovation majeure réside dans l'intégration d'un réseau de neurones de type \textbf{NNUE} (\textit{Efficiently Updatable Neural Network}) comme fonction d'évaluation, optimisé pour une exécution sans unité de calcul flottant (FPU). 
+Ce document détaille la conception d'un moteur d'échecs hybride sur \textbf{STM32F411}. L'innovation majeure réside dans l'intégration d'un réseau de neurones de type \textbf{NNUE} (\textit{Efficiently Updatable Neural Network}) comme fonction d'évaluation, optimisé pour une exécution \textbf{sans recourir} aux calculs flottants (FPU).
 
 Afin de respecter la « loi d'airain » du matériel, le modèle suit une chaîne de transformation rigoureuse :
 \begin{itemize}
@@ -112,7 +112,7 @@ Le système repose sur un processeur \textbf{ARM Cortex-M4 32 bits} monocœur ca
 
 \begin{itemize}
     \item \textbf{Gestion du flux} : L'absence de multi-cœur impose un partage strict du temps processeur entre la recherche arborescente (Minimax) et l'inférence du réseau. L'optimisation du code est donc vitale au maintien de la profondeur de recherche.
-    \item \textbf{Arithm\'etique enti\`ere} : Bien que le c\oe ur Cortex-M4F dispose d'une FPU simple pr\'ecision, l'inf\'erence neuronale en \textit{float} est d\'elib\'er\'ement \'evit\'ee. Le choix \textbf{Int16} maximise le nombre de n\oe uds explor\'es par seconde, garantit un comportement d\'eterministe et simplifie le dimensionnement num\'erique sur une cible embarqu\'ee.. Cette approche exploite la puissance native du jeu d'instructions 32 bits pour transformer l'inférence en une séquence d'opérations entières à haute vélocité.
+    \item \textbf{Arithm\'etique enti\`ere} : Bien que le c\oe ur Cortex-M4F dispose d'une FPU simple pr\'ecision, l'inf\'erence neuronale en \textit{float} est d\'elib\'er\'ement \'evit\'ee. Le choix \textbf{Int16} maximise le nombre de n\oe uds explor\'es par seconde, garantit un comportement d\'eterministe et simplifie le dimensionnement num\'erique. Cette approche exploite la puissance native du jeu d'instructions 32 bits pour transformer l'inférence en une séquence d'opérations entières à haute vélocité.
 \end{itemize}
 
 \subsection{Objectifs de l'EDD}
@@ -173,7 +173,7 @@ Soit $\mathbf{W} \in \mathbb{Z}^{768 \times 32}$ la matrice des poids synaptique
 \end{equation}
 Où $\mathbf{b} \in \mathbb{Z}^{1 \times 32}$ est le biais. L'accumulateur correspond mathématiquement à la somme vectorielle des poids des caractéristiques actives.
 
-\subsection{Démonstration de la Mise à Jour Incrémentale}
+\subsection{Incrémentalité}
 La performance du moteur sur \textbf{STM32F411} repose sur l'exploitation de la corrélation entre deux positions successives. Lors d'un mouvement déplaçant une pièce d'une case source ($s$) vers une case destination ($d$), le vecteur $\mathbf{x}$ ne subit que deux modifications : l'indice $i$ (pièce sortante) passe à $0$ et l'indice $j$ (pièce entrante) passe à $1$.
 
 \paragraph{Preuve par substitution :}
@@ -265,7 +265,7 @@ La condition $29\,337 \leq 32\,767$ est vérifiée. Cette limite garantit que la
 
 \subsection{Analyse de la couche de sortie}
 
-Le calcul du score de sortie s'effectue au sein d'un registre 32 bits signé (\texttt{int32\_t}). Les activations $a_i$ transmises par la couche cachée sont préalablement bornées par la fonction \textbf{CReLu} dans l'intervalle $[0, Q_A]$, soit $[0, 127]$.
+L'évaluation combine deux accumulateurs de taille $HL=32$ (une perspective ``Blanc'' et une perspective ``Noir''), concaténés en un vecteur de taille $2HL=64$ avant le produit scalaire final. Le calcul du score de sortie s'effectue au sein d'un registre 32 bits signé (\texttt{int32\_t}). Les activations $a_i$ transmises par la couche cachée sont préalablement bornées par la fonction \textbf{CReLu} dans l'intervalle $[0, Q_A]$, soit $[0, 127]$.
 
 \paragraph{Calcul du score brut}
 Le score intermédiaire $S$ agrège les contributions des 64 neurones (32 issus de la perspective blanche, 32 de la perspective noire) et y ajoute le biais de sortie $B_{\text{out}}$. Sa valeur maximale absolue s'établit à :
@@ -289,5 +289,129 @@ L'évaluation finale est ensuite obtenue par la division de cette valeur par le 
 \end{equation}
 
 Cette démonstration établit que les intervalles de clippage $C_1=7$ et $C_2=2$ bornent mathématiquement le réseau en dessous des limites matérielles du STM32F411, validant ainsi la stabilité numérique de l'inférence.
+
+% ==========================================
+%            SECTION 5 (AJOUT)
+% ==========================================
+
+\section{Stratégie d'Entraînement sous Contraintes}
+
+\subsection{Objectif : apprendre sous contraintes matérielles et de capacité}
+La section précédente a dimensionné le graphe de calcul de manière à garantir une exécution robuste sur \textbf{STM32F411} : choix des facteurs de quantification ($Q_A=127$, $Q_B=64$), bornage des paramètres, et démonstration de l'absence d'\textit{overflow} dans les registres \texttt{int16\_t} et \texttt{int32\_t}. Ce résultat n'est valide que si l'entraînement respecte effectivement les hypothèses de bornage utilisées dans les démonstrations.
+
+Deux contraintes majeures imposent donc une stratégie d'apprentissage spécifique :
+\begin{itemize}
+    \item \textbf{Contrainte matérielle} : le modèle final est exécuté en arithmétique entière. Toute dérive des poids/biais au-delà des plages prévues réintroduit un risque d'instabilité numérique (saturation, perte d'information, voire dépassement de capacité).
+    \item \textbf{Contrainte de capacité} : avec une unique couche cachée de \textbf{32 neurones}, le réseau ne dispose pas de redondance interne suffisante pour absorber les erreurs induites par la quantification ou par des labels bruités. La qualité des données et la stabilité de l'optimisation sont donc des facteurs déterminants.
+\end{itemize}
+
+L'objectif de cette section est de formaliser la chaîne d'entraînement qui permet d'obtenir un NNUE :
+(i) compatible avec l'exécution entière sur microcontrôleur, (ii) stable numériquement, et (iii) suffisamment précis malgré sa faible capacité.
+
+
+\subsection{Distillation : Stockfish comme oracle et définition des labels}
+Le réseau est entraîné par \textbf{distillation} à partir d'un moteur expert (Stockfish), utilisé comme oracle. À chaque position d'entraînement, Stockfish fournit une évaluation en \textbf{centipawns} (cp), utilisée comme cible supervisée.
+
+\paragraph{Budget de calcul (nodes = 5000).}
+L'oracle est configuré avec un budget fixe en nombre de nœuds explorés (noté \texttt{nodes}). Fixer \texttt{nodes=5000} permet d'obtenir des labels plus stables qu'une évaluation superficielle, tout en conservant un débit de génération compatible avec la production d'un dataset volumineux.
+
+\paragraph{Deux meilleurs coups : mesure du caractère forçant.}
+Pour chaque position, l'oracle calcule les \textbf{deux meilleurs coups} (au sens de sa fonction d'évaluation, sous budget \texttt{nodes=5000}) et associe à chacun un score en \textbf{centipawns} :
+\begin{itemize}
+    \item $s_1$ : score (en cp) du meilleur coup,
+    \item $s_2$ : score (en cp) du second meilleur coup.
+\end{itemize}
+On définit alors une mesure de \textit{sharpness} :
+\begin{equation}
+    \Delta = |s_1 - s_2|.
+\end{equation}
+Une faible $\Delta$ caractérise une position où plusieurs coups se valent, tandis qu'une forte $\Delta$ indique qu'un coup se détache nettement des alternatives, typiquement dans des situations plus tactiques ou contraintes.
+
+\paragraph{Bornage et normalisation des cibles.}
+Afin de stabiliser l'optimisation et de rendre la cible compatible avec la dynamique du réseau, le score est borné puis normalisé :
+\begin{equation}
+    y = \frac{\mathrm{clip}(s_1, -C, C)}{C}, \qquad C = 2000.
+\end{equation}
+Cette normalisation borne typiquement $y$ dans l'intervalle $[-1,1]$ et rend la fonction de perte (de type Huber/SmoothL1) numériquement stable.
+
+\subsection{Génération et sélection des données : qualité et diversité}
+Avec une unique couche cachée de 32 neurones, la qualité des données est un facteur déterminant : le modèle ne peut pas compenser un dataset fortement bruité ou déséquilibré. La génération suit donc un protocole orienté « \textbf{qualité et diversité} ».
+
+\paragraph{Génération de trajectoires réalistes.}
+Les positions sont obtenues en générant des parties synthétiques. La politique de jeu cherche à rester plausible tout en évitant la répétitivité :
+\begin{itemize}
+    \item un début de partie partiellement randomisé permet de diversifier les structures,
+    \item puis les coups sont choisis dans un ensemble restreint de coups de bonne qualité proposés par le moteur (afin d'éviter des positions artificielles ou irréalistes).
+\end{itemize}
+
+\paragraph{Rééquilibrage de la distribution des scores.}
+Les positions « naturelles » sont majoritairement proches de $0$ cp. Sans correction, le dataset serait dominé par des exemples quasi neutres et le modèle apprendrait essentiellement à prédire $0$. Un rééquilibrage est donc appliqué : les positions faiblement avantageuses (petit $|s_1|$) sont sous-échantillonnées, tandis que les positions où $|s_1|$ est plus marqué sont surreprésentées.
+
+\paragraph{Contrôle du niveau tactique via $\Delta$.}
+Un excès de positions extrêmement forçantes (très grande $\Delta$) peut introduire une variabilité difficile à modéliser pour un réseau minimaliste. À l'inverse, un dataset trop « plat » produit une évaluation peu discriminante. La mesure $\Delta$ est donc utilisée pour contrôler la part de positions tactiques : elles ne sont pas supprimées, mais intégrées de manière contrôlée (par filtrage probabiliste ou quotas par tranches de $\Delta$).
+
+\paragraph{Sous-échantillonnage du tout début de partie.}
+Les toutes premières positions sont très similaires d'une partie à l'autre et apportent peu d'information utile au modèle. Elles sont donc sous-échantillonnées au profit de positions plus informatives (milieux de partie, structures de pions variées, transitions).
+
+\subsection{QAT vs PTQ : justification et principe}
+La quantification finale repose sur le schéma défini dans la section précédente ($Q_A=127$, $Q_B=64$), et sur une inférence entière stricte. Deux approches peuvent conduire à un modèle quantifié :
+\begin{itemize}
+    \item \textbf{PTQ} : entraînement en flottant, quantification uniquement en fin de chaîne,
+    \item \textbf{QAT} : entraînement en simulant la quantification pendant l'apprentissage.
+\end{itemize}
+Dans le cadre d'un réseau très frugal (\textbf{HL=32}), la PTQ conduit fréquemment à une perte de performance, car l'arrondi et la saturation modifient sensiblement la fonction d'évaluation. Le \textbf{QAT} est donc retenu afin d'aligner l'apprentissage sur le comportement réel du modèle déployé.
+
+\paragraph{Fake quantification et approximation de gradient.}
+Le QAT consiste à introduire, dans le \textit{forward} d'entraînement, une \textbf{fausse quantification} (\textit{fake quant}) qui reproduit les opérations de mise à l'échelle, d'arrondi et de saturation. Le \textit{backward} utilise une approximation de gradient (de type \textit{Straight-Through Estimator}, STE) afin de permettre la descente de gradient malgré la non-dérivabilité de l'arrondi.
+
+\subsection{Stabilisation : weight decay, clipping et descente projetée}
+Afin de garantir la compatibilité du modèle avec les bornes numériques démontrées en section précédente, l'entraînement intègre des mécanismes explicites de stabilisation.
+
+\paragraph{Weight decay.}
+Une régularisation de type $L_2$ (implémentée via AdamW) limite la croissance de la norme des paramètres. Cela évite que le modèle tente de compenser sa faible capacité par une explosion des poids, comportement particulièrement destructeur après quantification (saturation et perte d'information).
+
+\paragraph{Gradient clipping.}
+Le clipping des gradients borne les mises à jour trop violentes, notamment sur des batchs difficiles (positions tactiques). Il stabilise la convergence et réduit les oscillations.
+
+\paragraph{Descente de gradient projetée (projection des paramètres).}
+Après chaque étape d'optimisation, les paramètres sont projetés dans un hyper-rectangle de contraintes cohérent avec le dimensionnement numérique :
+\begin{itemize}
+    \item $W_1, B_1 \in [-7,7]$ (couche d'accumulateur),
+    \item $W_2, B_2 \in [-2,2]$ (couche de sortie).
+\end{itemize}
+Mathématiquement :
+\begin{equation}
+    \theta \leftarrow \Pi_{\mathcal{C}}\left(\theta - \eta \nabla L(\theta)\right),
+\end{equation}
+où $\Pi_{\mathcal{C}}$ est la projection sur l'ensemble admissible $\mathcal{C}$. Cette étape assure que les poids restent compatibles avec le schéma de quantification et que les intervalles finaux (en entier) respectent les bornes nécessaires à l'absence d'\textit{overflow}.
+
+\begin{lstlisting}[language=Python, caption={Projection des paramètres (\texttt{secure\_weights}) : descente de gradient projetée.}]
+def secure_weights(model):
+    # Bornes en float (avant quantification)
+    ACC_W_MIN, ACC_W_MAX = -7.0, 7.0
+    ACC_B_MIN, ACC_B_MAX = -7.0, 7.0
+
+    OUT_W_MIN, OUT_W_MAX = -2.0, 2.0
+    OUT_B_MIN, OUT_B_MAX = -2.0, 2.0
+
+    with torch.no_grad():
+        model.acc_weight.weight.data.clamp_(ACC_W_MIN, ACC_W_MAX)
+        if model.acc_weight.bias is not None:
+            model.acc_weight.bias.data.clamp_(ACC_B_MIN, ACC_B_MAX)
+
+        model.output_weight.weight.data.clamp_(OUT_W_MIN, OUT_W_MAX)
+        if model.output_weight.bias is not None:
+            model.output_weight.bias.data.clamp_(OUT_B_MIN, OUT_B_MAX)
+\end{lstlisting}
+
+\subsection{Synthèse opérationnelle : pipeline unifié}
+La chaîne d'entraînement sous contraintes est structurée comme suit :
+\begin{enumerate}
+    \item \textbf{Génération} de positions diversifiées et plausibles (trajectoires synthétiques) et \textbf{sous-échantillonnage} des positions redondantes (début de partie).
+    \item \textbf{Labellisation} par distillation Stockfish avec budget fixe \texttt{nodes=5000} : pour chaque position, calcul des \textbf{deux meilleurs coups} et de leurs scores $s_1$ et $s_2$ (en cp), puis calcul de $\Delta = |s_1 - s_2|$.
+    \item \textbf{Filtrage et échantillonnage} : bornage des scores via $C$, normalisation $y=s_1/C$, rééquilibrage de la distribution de $|y|$, et contrôle du niveau tactique via $\Delta$.
+    \item \textbf{Entraînement principal (boucle unique)} : \textbf{QAT} (fake quant + STE) \emph{conjointement} à la stabilisation (\textit{weight decay}, \textit{gradient clipping}) et à la \textbf{projection} des paramètres (\texttt{secure\_weights}) après mise à jour.
+    \item \textbf{Export} des poids quantifiés cohérents avec $Q_A$ et $Q_B$ (et biais à l'échelle $Q_A Q_B$)
+\end{enumerate}
 
 \end{document}
