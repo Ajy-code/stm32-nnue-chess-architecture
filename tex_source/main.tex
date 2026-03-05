@@ -308,7 +308,6 @@ Deux contraintes majeures imposent donc une stratégie d'apprentissage spécifiq
 L'objectif de cette section est de formaliser la chaîne d'entraînement qui permet d'obtenir un NNUE :
 (i) compatible avec l'exécution entière sur microcontrôleur, (ii) stable numériquement, et (iii) suffisamment précis malgré sa faible capacité.
 
-
 \subsection{Distillation : Stockfish comme oracle et définition des labels}
 Le réseau est entraîné par \textbf{distillation} à partir d'un moteur expert (Stockfish), utilisé comme oracle. À chaque position d'entraînement, Stockfish fournit une évaluation en \textbf{centipawns} (cp), utilisée comme cible supervisée.
 
@@ -411,7 +410,73 @@ La chaîne d'entraînement sous contraintes est structurée comme suit :
     \item \textbf{Labellisation} par distillation Stockfish avec budget fixe \texttt{nodes=5000} : pour chaque position, calcul des \textbf{deux meilleurs coups} et de leurs scores $s_1$ et $s_2$ (en cp), puis calcul de $\Delta = |s_1 - s_2|$.
     \item \textbf{Filtrage et échantillonnage} : bornage des scores via $C$, normalisation $y=s_1/C$, rééquilibrage de la distribution de $|y|$, et contrôle du niveau tactique via $\Delta$.
     \item \textbf{Entraînement principal (boucle unique)} : \textbf{QAT} (fake quant + STE) \emph{conjointement} à la stabilisation (\textit{weight decay}, \textit{gradient clipping}) et à la \textbf{projection} des paramètres (\texttt{secure\_weights}) après mise à jour.
-    \item \textbf{Export} des poids quantifiés cohérents avec $Q_A$ et $Q_B$ (et biais à l'échelle $Q_A Q_B$).
+    \item \textbf{Export} des poids quantifiés cohérents avec $Q_A$ et $Q_B$ (et biais à l'échelle $Q_A Q_B$), puis validation de cohérence float$\rightarrow$entier sur un ensemble de positions de test.
 \end{enumerate}
+
+% ==========================================
+%            SECTION 6 (AJOUT)
+% ==========================================
+
+\section{Spécifications d'Intégration}
+
+% --- Mise en forme locale pour aérer la Section 6 (sans changer le texte) ---
+\begingroup
+\setlength{\parskip}{0.75em}
+\setlength{\parindent}{0pt}
+
+Cette section constitue le cadre technique à destination de l'équipe de développement C/C++. Elle précise les choix d'intégration nécessaires pour que le moteur d'échecs exploite correctement les optimisations définies dans les sections précédentes, tout en restant compatible avec les contraintes de calcul du STM32F411. L'objectif est ici de traduire les choix théoriques en exigences d'implémentation cohérentes avec une exécution embarquée, frugale et déterministe.
+
+\vspace{0.4em}
+\subsection{Algorithmique de recherche : Alpha-Bêta et formulation NegaMax}
+\vspace{0.2em}
+
+L'algorithme de recherche recommandé pour la première implémentation est une recherche \textbf{Alpha-Bêta}, formulée sous la forme \textbf{NegaMax}. Ce choix est motivé par son excellent compromis entre simplicité d'implémentation, coût de calcul et profondeur de recherche atteignable sur une cible embarquée. À profondeur égale, Alpha-Bêta permet de réduire fortement le nombre de nœuds explorés par rapport à une recherche exhaustive naïve, tout en conservant le même résultat qu'un schéma Minimax classique hors heuristiques sélectives.
+
+La formulation \textbf{NegaMax} est retenue car elle s'aligne naturellement avec le comportement du réseau \textbf{NNUE}, qui renvoie une évaluation exprimée selon une perspective donnée. Dans ce cadre, il devient possible d'unifier la recherche autour d'une seule fonction récursive, ce qui simplifie l'implémentation et réduit la complexité logique du moteur. Concrètement, chaque nœud est évalué en maximisant l'opposé de la valeur retournée par les nœuds fils, ce qui permet de conserver une structure de code compacte et cohérente avec l'évaluation neuronale.
+
+La performance pratique d'une recherche Alpha-Bêta dépend cependant fortement de la qualité de l'ordonnancement des coups et des mécanismes d'élagage associés. L'implémentation devra donc intégrer prioritairement les optimisations suivantes :
+\begin{itemize}
+    \item \textbf{Iterative Deepening}, afin d'obtenir à tout instant une meilleure réponse disponible à profondeur croissante. Cette stratégie permet également d'améliorer progressivement l'ordonnancement des coups au fil des itérations.
+    \item \textbf{Move Ordering}, pour tester en priorité les coups les plus prometteurs et provoquer les coupures le plus tôt possible. Sur une recherche Alpha-Bêta, la qualité de cet ordonnancement conditionne directement l'efficacité réelle de l'élagage.
+    \item \textbf{Killer Heuristic} et \textbf{History Heuristic}, afin d'exploiter les régularités observées dans l'arbre de recherche. Ces heuristiques permettent de prioriser certains coups ayant déjà montré leur efficacité dans des contextes similaires.
+\end{itemize}
+
+Dans cette architecture, le \textbf{NNUE} constitue la fonction d'évaluation statique de référence. Il doit être intégré de façon cohérente avec la recherche, de manière à guider le moteur sans introduire de divergence entre la logique de recherche et la logique d'évaluation. L'ensemble recherche + évaluation doit donc être conçu comme un système unifié : Alpha-Bêta réduit l'espace exploré, tandis que le NNUE fournit une estimation rapide et stable de la qualité des positions atteintes.
+
+\vspace{0.6em}
+\subsection{Génération de mouvements et optimisation bit-à-bit sur architecture 32 bits}
+\vspace{0.2em}
+
+La représentation de l'échiquier repose sur des \textbf{bitboards}, c'est-à-dire des entiers de 64 bits où chaque bit représente une case. Ce choix reste pertinent sur STM32F411, car il permet d'exprimer de manière compacte et efficace l'occupation des pièces, les masques d'attaque et de nombreuses opérations échiquéennes.
+
+Néanmoins, le STM32F411 étant une architecture \textbf{32 bits}, la manipulation de données 64 bits induit un surcoût par rapport à une cible 64 bits native. L'implémentation du générateur de coups devra donc être pensée pour limiter autant que possible ce surcoût, tout en conservant les avantages algorithmiques des bitboards.
+
+En pratique, cela implique :
+\begin{itemize}
+    \item un usage intensif des opérations logiques bit-à-bit ;
+    \item une structuration compacte des masques et des calculs d'attaque ;
+    \item et, lorsque cela est pertinent, l'exploitation de techniques d'optimisation de type \textbf{SWAR} adaptées au cœur Cortex-M4.
+\end{itemize}
+
+L'objectif n'est pas d'ajouter une complexité inutile, mais de garantir que la génération de coups reste suffisamment efficace pour ne pas annuler les gains obtenus par la frugalité du NNUE. Cette exigence est essentielle, car la génération de coups est exécutée à très haute fréquence dans la boucle de recherche ; toute inefficacité à ce niveau réduirait directement la profondeur atteignable par le moteur.
+
+\vspace{0.6em}
+\subsection{Accélération de l'inférence via les capacités DSP du Cortex-M4}
+\vspace{0.2em}
+
+L'architecture du NNUE a été définie de manière à être compatible avec une exécution entière efficace sur \textbf{Cortex-M4}. Le choix d'une quantification stricte en \textbf{Int16} ne répond pas uniquement à une contrainte de mémoire : il vise également à rendre possible une exploitation efficace des capacités de calcul entier du microcontrôleur.
+
+En conséquence, les parties critiques de l'inférence — en particulier :
+\begin{itemize}
+    \item la \textbf{mise à jour incrémentale de l'accumulateur} ;
+    \item et le \textbf{calcul final de la couche de sortie} —
+\end{itemize}
+doivent être implémentées de manière à tirer parti des mécanismes de calcul optimisés disponibles sur le cœur ARM, plutôt que de reposer uniquement sur une version scalaire naïve.
+
+L'exigence n'est pas ici d'imposer une implémentation bas niveau spécifique dans le détail, mais de fixer un principe clair : les boucles critiques du NNUE doivent être structurées pour bénéficier des capacités DSP du Cortex-M4, de façon à réduire le coût du produit scalaire et des opérations d'accumulation. Cela permet de préserver, au moment de l'exécution réelle, le bénéfice attendu du choix NNUE + quantification entière.
+
+Autrement dit, le modèle ne doit pas seulement être mathématiquement compatible avec le matériel ; son intégration logicielle doit également être pensée pour exploiter efficacement les ressources de calcul disponibles. Sans cette cohérence entre architecture réseau et implémentation embarquée, une part importante du gain de performance attendu serait perdue.
+
+\endgroup
 
 \end{document}
