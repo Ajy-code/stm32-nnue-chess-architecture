@@ -14,7 +14,7 @@ L'objectif est de démontrer la viabilité d'un modèle d'IA non-linéaire sous 
 
 ## 🧠 Architecture & Optimisation
 
-### Inférence Incrémentale (Complexité $O(32)$)
+### Inférence Incrémentale
 Le goulot d'étranglement des réseaux de neurones sur microcontrôleur est le produit matriciel. Ce design exploite la parcimonie du **One-Hot Encoding** (768 entrées) pour transformer l'inférence de la couche cachée en une mise à jour différentielle de l'accumulateur :
 
 $$A_{t+1} = A_{t} - w_{\text{source}} + w_{\text{dest}}$$
