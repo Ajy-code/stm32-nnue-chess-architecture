@@ -17,7 +17,7 @@ L'objectif est de démontrer la viabilité d'un modèle d'IA non-linéaire sous 
 ### Inférence Incrémentale
 Le goulot d'étranglement des réseaux de neurones sur microcontrôleur est le produit matriciel. Ce design exploite la parcimonie du **One-Hot Encoding** (768 entrées) pour transformer l'inférence de la couche cachée en une mise à jour différentielle de l'accumulateur :
 
-$$A_{t+1} = A_{t} - w_{\text{source}} + w_{\text{dest}}$$
+$$A_{t+1} = A_{t} - w_{\text{pos_init}} + w_{\text{pos_final}}$$
 
 Chaque mouvement de pièce ne nécessite que **64 opérations d'addition/soustraction entières**, permettant au moteur de maintenir un débit de nœuds (NPS) élevé malgré la fréquence d'horloge réduite.
 
