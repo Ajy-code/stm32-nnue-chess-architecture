@@ -92,37 +92,44 @@
 %            DÉBUT DU CONTENU
 % ==========================================
 
-\section{Résumé Exécutif}
-Ce document détaille la conception d'un moteur d'échecs hybride sur \textbf{STM32F411}. L'innovation majeure réside dans l'intégration d'un réseau de neurones de type \textbf{NNUE} (\textit{Efficiently Updatable Neural Network}) comme fonction d'évaluation, optimisé pour une exécution \textbf{sans recourir} au calcul en virgule flottante afin de maximiser le débit d'inférence sur STM32F411.
+\section{Résumé exécutif}
+Ce document détaille la conception d'un moteur d'échecs hybride sur \textbf{STM32F411}. L'innovation majeure réside dans la conception d'une architecture IA frugale co-optimisée hardware/algorithme entièrement optimisée pour une exécution en arithmétique entière sur microcontrôleur.
 
-Afin de respecter la « loi d'airain » du matériel, le modèle suit une chaîne de transformation rigoureuse :
+Le modèle est conçu pour satisfaire les contraintes matérielles strictes du \textbf{STM32F411}, ce qui impose plusieurs choix de conception.:
 \begin{itemize}
-    \item \textbf{Architecture Frugale} : Une couche cachée limitée à 32 neurones pour minimiser l'empreinte mémoire.
-    \item \textbf{Quantification Int16} : Une conversion intégrale en arithmétique entière 16 bits. Ce choix garantit une exécution déterministe et performante sur un microcontrôleur dépourvu d'accélérateurs dédiés au calcul matriciel.
-    \item \textbf{Contraintes Matérielles} : Le système est dimensionné pour opérer dans une enveloppe stricte de \textbf{128 Ko de RAM} et \textbf{512 Ko de Flash}.
+    \item \textbf{Architecture frugale} : Une couche cachée limitée à 32 neurones pour minimiser l'empreinte mémoire.
+    \item \textbf{Quantification int16} : Une conversion intégrale en arithmétique entière 16 bits. Ce choix garantit une exécution déterministe et performante sur un microcontrôleur dépourvu d'accélérateurs dédiés au calcul matriciel.
+    \item \textbf{Contraintes matérielles} : Le système est dimensionné pour opérer dans une enveloppe stricte de \textbf{128 Ko de RAM} et \textbf{512 Ko de Flash}.
 \end{itemize}
 
 \section{Introduction}
 
 \subsection{Sélection de la plateforme : STM32F411}
-Le STM32F411 a été retenu pour son rapport performance/consommation optimal en contexte \textit{Edge}. Bien que doté d'un cœur Cortex-M4, ses contraintes (fréquence, RAM/Flash, latence) imposent des choix algorithmiques orientés vers l'efficacité brute.
+
+Le \textbf{STM32F411} est utilisé comme plateforme cible afin de valider la capacité de l’architecture proposée à fonctionner dans un environnement matériel fortement contraint.
+
+Ce choix ne vise pas à optimiser les performances absolues, mais à démontrer qu’un moteur hybride combinant recherche arborescente et évaluation neuronale peut être déployé sur un microcontrôleur disposant de ressources limitées (fréquence, mémoire).
+
+Dans ce contexte, les contraintes du STM32F411 imposent des choix algorithmiques strictement orientés vers l’efficacité en calcul et en mémoire.
 
 \subsection{Capacité de calcul et architecture}
 Le système repose sur un processeur \textbf{ARM Cortex-M4 32 bits} monocœur cadencé à \textbf{100 MHz}. 
 
 \begin{itemize}
     \item \textbf{Gestion du flux} : L'absence de multi-cœur impose un partage strict du temps processeur entre la recherche arborescente (Minimax) et l'inférence du réseau. L'optimisation du code est donc vitale au maintien de la profondeur de recherche.
-    \item \textbf{Arithm\'etique enti\`ere} : Bien que le c\oe ur Cortex-M4F dispose d'une FPU simple pr\'ecision, l'inf\'erence neuronale en \textit{float} est d\'elib\'er\'ement \'evit\'ee. Le choix \textbf{Int16} maximise le nombre de n\oe uds explor\'es par seconde, garantit un comportement d\'eterministe et simplifie le dimensionnement num\'erique. Cette approche exploite la puissance native du jeu d'instructions 32 bits pour transformer l'inférence en une séquence d'opérations entières à faible latence et à haut débit.
+    \item \textbf{Arithm\'etique enti\`ere} : Bien que le c\oe ur Cortex-M4F dispose d'une FPU simple pr\'ecision, l'inf\'erence en virgule flottante est d\'elib\'er\'ement \'evit\'ee. Le choix d'une repr\'esentation en \textbf{Int16} permet d'obtenir un compromis efficace entre pr\'ecision num\'erique et performance, tout en r\'eduisant le co\^ut de calcul et l'empreinte m\'emoire.
+
+Cette approche permet une ex\'ecution enti\`erement d\'eterministe et s'appuie sur des op\'erations enti\`eres \`a faible latence, adapt\'ees aux capacit\'es du microcontr\^oleur.
 \end{itemize}
 
 \subsection{Objectifs de l'EDD}
-Le présent document vise à démontrer que l'alliance d'un réseau de neurones et d'une quantification Int16 permet d'atteindre une précision d'évaluation supérieure aux heuristiques classiques, tout en respectant les limites thermiques et énergétiques d'un système embarqué.
+Le présent document vise à démontrer qu'une architecture hybride combinant recherche arborescente et évaluation neuronale de type NNUE permet de dépasser les heuristiques conçues manuellement, tout en maintenant une exécution efficace sur un matériel embarqué fortement contraint, ouvrant la voie à des systèmes d'optimisation frugaux et généralisables.
 
 \section{Architecture du moteur d'évaluation (NNUE)}
 Le choix d'un réseau de neurones de type \textbf{NNUE} répond à la nécessité de dépasser les limites de précision des fonctions d'évaluation statiques traditionnelles tout en respectant les contraintes de latence d'un système embarqué. Cette architecture, composée d'une unique couche cachée couplée à une fonction d'activation de type \textbf{CReLu} (\textit{Clipped ReLU}), effectue enfin un produit scalaire entre les activations et les poids de sortie afin de produire un score scalaire. L'ensemble repose sur la capacité de l'accumulateur à subir des mises à jour incrémentales induites par les différences entre deux positions consécutives.
 
 \subsection{Représentation de l'échiquier (One-Hot Encoding)}
-L'état physique de l'échiquier est projeté dans un espace vectoriel de dimension $N=768$. Cet espace permet un mappage bijectif entre une configuration locale $\{\text{pièce, couleur, case}\}$ et un index unique $k \in \{0,\dots,767\}$. L'indexation est régie par la fonction de hachage suivante :
+L'état physique de l'échiquier est représenté dans un espace vectoriel de dimension $N=768$. Cet espace permet un mappage bijectif entre une configuration locale $\{\text{pièce, couleur, case}\}$ et un index unique $k \in \{0,\dots,767\}$. L'indexation est régie par la fonction de hachage suivante :
 \begin{equation}
     k \;=\; (\;6 \cdot \text{couleur} \;+\; \text{pi\`ece}\;)\cdot 64 \;+\; \text{case}
 \end{equation}
@@ -132,7 +139,7 @@ Les variables de cette fonction sont discrétisées selon les plages suivantes :
     \item $\text{\textbf{couleur}} \in \{0, 1\}$ où $0$ représente les Blancs et $1$ les Noirs.
     \item $\text{\textbf{case}} \in \{0, 1, \dots, 63\}$ pour les 64 cases de l'échiquier.
 \end{itemize}
-Le vecteur d'entrée est défini comme un vecteur ligne binaire $\mathbf{x} \in \{0, 1\}^{1 \times 768}$. Par construction, $\mathbf{x}$ est une représentation \textit{One-Hot} : pour chaque case occupée, une seule composante parmi les 12 possibles est active (valeur $1$), les autres étant nulles ($0$).
+Le vecteur d'entrée est défini comme un vecteur ligne binaire $\mathbf{x} \in \{0, 1\}^{1 \times 768}$. On organise les 768 dimensions en 64 groupes de 12, chaque groupe correspondant à une case. Chaque groupe encode une variable catégorielle (type de pièce et couleur), ce qui induit une structure de type one-hot localement, mais multi-active globalement.
 
 \begin{figure}[H]
     \centering
